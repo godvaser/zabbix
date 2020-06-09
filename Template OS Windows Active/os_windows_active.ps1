@@ -159,11 +159,15 @@ function Get-LatestUpdate {
     [System.Reflection.Assembly]::LoadWithPartialName('Microsoft.Update.Session') | Out-Null
     $Session = New-Object -ComObject Microsoft.Update.Session                    
     $UpdateSearcher = $Session.CreateUpdateSearcher()
-    $NumUpdates = $UpdateSearcher.GetTotalHistoryCount()
-    $InstalledUpdates = $UpdateSearcher.QueryHistory(1, $NumUpdates)
-    $LastInstalledUpdate = $InstalledUpdates | Select-Object Title, Date | Sort-Object -Property Date -Descending | Select-Object -first 1
+    if ((Get-Service wuauserv).StartType -ne "Disabled") {
+        $NumUpdates = $UpdateSearcher.GetTotalHistoryCount()
+            if ($NumUpdates -gt 1) {
+                $InstalledUpdates = $UpdateSearcher.QueryHistory(1, $NumUpdates)
+                $LastInstalledUpdate = $InstalledUpdates | Select-Object Title, Date | Sort-Object -Property Date -Descending | Select-Object -first 1
 
-    return $LastInstalledUpdate.Date
+                return $LastInstalledUpdate.Date}
+            else {return "NEWER UPDATE"}}
+    else {return "SERVICE DISABLED - DON'T KNOW"}
 }
     
 #Adapted from https://gist.github.com/altrive/5329377
@@ -307,6 +311,8 @@ if ($ActionType -eq "get") {
         $LastBootUpTime = (Get-WmiObject win32_operatingsystem | Select-Object csname, @{LABEL = 'LastBootUpTime'; EXPRESSION = {$_.ConverttoDateTime($_.lastbootuptime)}}).LastBootUpTime
         $LocalTime = Get-Date
         $PSComputername = Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty PSComputername
+	#РџСЂРѕРІРµСЂРєР° РїРѕРґСЃС‚Р°РЅРѕРІРєРё РґРѕРјРµРЅР° РІ РРјСЏ РџРљ
+		#$Dom = Get-WmiObject Win32_Computersystem | Select-Object -ExpandProperty domain
         $Caption = Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty Caption
         $OSArchitecture = Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture
         $Manufacturer = Get-WmiObject Win32_BIOS | Select-Object -ExpandProperty Manufacturer
@@ -329,8 +335,10 @@ if ($ActionType -eq "get") {
         $result = New-Object PSCustomObject
 
         ######################  host
-        $hostname = $env:COMPUTERNAME
-        $result | Add-Member -type NoteProperty -name Hostname  -Value $hostname
+		$PC = $env:COMPUTERNAME
+		#$Dom = Get-WmiObject Win32_Computersystem | Select-Object -ExpandProperty domain
+        #$hostname = "$PC.$Dom"
+        $result | Add-Member -type NoteProperty -name Hostname  -Value $PC
     
         ######################  get serial number and bios
         $bios = (Get-WmiObject win32_bios)
@@ -351,11 +359,21 @@ if ($ActionType -eq "get") {
         $os_Version = $os.Version
         $os_title = $os.Caption
         $os_installdate = [timezone]::CurrentTimeZone.ToLocalTime(([datetime]'1/1/1970').AddSeconds($(get-itemproperty 'HKLM:\Software\Microsoft\Windows NT\CurrentVersion').InstallDate)) 
+        $os_license_status = Get-CimInstance SoftwareLicensingProduct -Filter "Name like 'Windows%'" | where { $_.PartialProductKey } | select -ExpandProperty LicenseStatus
+        if ($os_license_status -eq "1"){
+            $result | Add-Member -type NoteProperty -name OsLicenseStatus -Value "Licenced"}
+        else {
+            $result | Add-Member -type NoteProperty -name OsLicenseStatus -Value "NOT Licenced($os_license_status)"}
         $BootTime = $os.ConvertToDateTime($os.LastBootUpTime) 
         $Uptime = [math]::Round( ($os.ConvertToDateTime($os.LocalDateTime) - $boottime).TotalSeconds)
         $update_latest_date = Get-LatestUpdate
-        $StartDate = (GET-DATE)
-        $update_latest_seconds = [math]::Round(($StartDate - $update_latest_date).TotalSeconds)
+            if (($update_latest_date -ne "NEWER UPDATE") -and ($update_latest_date -ne "SERVICE DISABLED - DON'T KNOW")){
+                $StartDate = (GET-DATE)
+                $update_latest_seconds = [math]::Round(($StartDate - $update_latest_date).TotalSeconds)
+                $result | Add-Member -type NoteProperty -name OSLatestUpdatesInstalled -Value $update_latest_date.tostring("dd.MM.yyyy")
+            }
+            elseif ($update_latest_date -eq "SERVICE DISABLED - DON'T KNOW") {$result | Add-Member -type NoteProperty -name OSLatestUpdatesInstalled -Value "SERVICE DISABLED - DO NoT KNOW"}
+            else {$result | Add-Member -type NoteProperty -name OSLatestUpdatesInstalled -Value "NEWER UPDATE"}
         $pending_reboot = Test-PendingReboot
         $pending_reboot = [System.Convert]::ToInt32($pending_reboot)
 
@@ -364,7 +382,7 @@ if ($ActionType -eq "get") {
         $result | Add-Member -type NoteProperty -name OSVersion -Value $os_Version
         $result | Add-Member -type NoteProperty -name OSTitle -Value $os_title
         $result | Add-Member -type NoteProperty -name OSInstallDate -Value $os_installdate.tostring("dd.MM.yyyy")
-        $result | Add-Member -type NoteProperty -name OSLatestUpdatesInstalled -Value $update_latest_date.tostring("dd.MM.yyyy")
+        
         $result | Add-Member -type NoteProperty -name OSSecondsFromLatestUpdatesInstalled -Value $update_latest_seconds
         $result | Add-Member -type NoteProperty -name OSUptime  -Value  $Uptime
         $result | Add-Member -type NoteProperty -name PendingReboot -Value $pending_reboot 
@@ -432,7 +450,7 @@ if ($ActionType -eq "get") {
         #$ips = ""
         #Get-NetIPConfiguration |  Foreach IPv4Address | % { $ips = $ips + $_.IPAddress + ";"  }
     
-        $nwINFO = Get-WmiObject  Win32_NetworkAdapterConfiguration | Where-Object { $_.IPAddress -ne $null } | Select-Object IPAddress, IpSubnet, DefaultIPGateway, MACAddress, DNSServerSearchOrder
+        $nwINFO = Get-WmiObject  Win32_NetworkAdapterConfiguration | Where-Object { ($_.IPAddress -ne $null) -and ($_.DefaultIPGateway -ne $null)} | Select-Object IPAddress, IpSubnet, DefaultIPGateway, MACAddress, DNSServerSearchOrder
         $result | Add-Member -type NoteProperty -name Networks -Value $nwINFO 
 
 
